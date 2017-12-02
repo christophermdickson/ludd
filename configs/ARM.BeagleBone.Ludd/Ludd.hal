@@ -1,0 +1,220 @@
+# load .ini variables without starting anything. 
+# (Note - there can only be one .ini file which is a pain)
+#halrun -U
+#halrun -I -i t2.ini
+#halrun -I -i Ludd.ini
+######################################################################
+
+# first load the core RT modules that will be needed
+# kinematics
+loadrt trivkins
+# motion controller, get name and thread periods from ini file
+# trajectory planner
+loadrt tp
+loadrt [EMCMOT]EMCMOT servo_period_nsec=[EMCMOT]SERVO_PERIOD num_joints=[TRAJ]AXES tp=tp kins=trivkins
+loadrt pid count=3
+loadrt limit1 count=3
+
+# BBB-specific pins  - N.B. cape-universal must be loaded....
+
+###This was to free up 914 for EHRPWM  - but 811 is the 1st PRU pwm generator in the generic config - can't have both.
+###loadrt hal_bb_gpio output_pins=811,816,822,823,824,825,826,923,925 input_pins=807,808,809,810,817,911,913
+loadrt hal_bb_gpio output_pins=816,822,823,824,825,826,914,923,925 input_pins=807,808,809,810,817,911,913
+
+# use PRU pwmgen instead of s/w version...
+loadrt [PRUCONF](DRIVER) prucode=$(HAL_RTMOD_DIR)/[PRUCONF](PRUBIN) [PRUCONF](CONFIG) halname=hpg
+
+# set up a streamer to connect the position feedback pins to
+# the arduino reading the igaging 21-bit scales.
+loadrt streamer depth=2 cfg=ssss
+
+
+# connect position feedback
+net Xpos-fb axis.0.motor-pos-fb => pid.0.feedback
+net Ypos-fb axis.1.motor-pos-fb => pid.1.feedback
+net Zpos-fb axis.2.motor-pos-fb => pid.2.feedback
+
+# create PID to DAC output signals
+net Xoutput <= pid.0.output
+net Youtput <= pid.1.output
+net Zoutput <= pid.2.output
+
+# set PID loop output limits. 
+setp pid.0.maxoutput [AXIS_0]MAX_VELOCITY
+setp pid.1.maxoutput [AXIS_1]MAX_VELOCITY
+setp pid.2.maxoutput [AXIS_2]MAX_VELOCITY
+
+# set PID loop gains from inifile
+
+# the values below come from the ini
+setp pid.0.Pgain [AXIS_0]P
+setp pid.0.Igain [AXIS_0]I
+setp pid.0.Dgain [AXIS_0]D
+setp pid.0.bias [AXIS_0]BIAS
+setp pid.0.FF0 [AXIS_0]FF0
+setp pid.0.FF1 [AXIS_0]FF1
+setp pid.0.FF2 [AXIS_0]FF2
+# deadband should be just over 1 count
+setp pid.0.deadband [AXIS_0]DEADBAND
+
+setp pid.1.Pgain [AXIS_1]P
+setp pid.1.Igain [AXIS_1]I
+setp pid.1.Dgain [AXIS_1]D
+setp pid.1.bias [AXIS_1]BIAS
+setp pid.1.FF0 [AXIS_1]FF0
+setp pid.1.FF1 [AXIS_1]FF1
+setp pid.1.FF2 [AXIS_1]FF2
+# deadband should be just over 1 count
+setp pid.1.deadband [AXIS_1]DEADBAND
+
+setp pid.2.Pgain [AXIS_2]P
+setp pid.2.Igain [AXIS_2]I
+setp pid.2.Dgain [AXIS_2]D
+setp pid.2.bias [AXIS_2]BIAS
+setp pid.2.FF0 [AXIS_2]FF0
+setp pid.2.FF1 [AXIS_2]FF1
+setp pid.2.FF2 [AXIS_2]FF2
+# deadband should be just over 1 count
+setp pid.2.deadband [AXIS_2]DEADBAND
+
+# limit pid output for initial testing.
+setp pid.0.maxoutput 0.5
+setp pid.1.maxoutput 0.5
+setp pid.2.maxoutput 0.5
+
+# position command signals
+net Xpos-cmd axis.0.motor-pos-cmd => pid.0.command
+net Ypos-cmd axis.1.motor-pos-cmd => pid.1.command
+net Zpos-cmd axis.2.motor-pos-cmd => pid.2.command
+#net Xpos-cmd => pid.0.command 
+#net Ypos-cmd => pid.1.command
+#net Zpos-cmd => pid.2.command
+
+# axis enable signals
+net Xenable axis.0.amp-enable-out => pid.0.enable
+net Yenable axis.1.amp-enable-out => pid.1.enable
+net Zenable axis.2.amp-enable-out => pid.2.enable
+######################################################################
+
+
+# hook functions to realtime thread
+
+addf motion-command-handler servo-thread
+addf motion-controller servo-thread
+addf pid.0.do-pid-calcs servo-thread
+addf pid.1.do-pid-calcs servo-thread
+addf pid.2.do-pid-calcs servo-thread
+addf limit1.0 servo-thread
+addf limit1.1 servo-thread
+addf limit1.2 servo-thread
+addf hpg.update servo-thread
+addf bb_gpio.write servo-thread
+addf streamer.0 servo-thread
+
+loadusr halstreamer /dev/ttyACM0
+
+loadrt conv_s32_float count=3
+loadrt scale count=3
+
+
+# XYZ is messed up on the iGaging scales, so reorder here... X=z, Y=X, Z=Y
+net Xpos-unscaled-fb scale.0.in
+net Xpos-unscaled-fb conv-s32-float.0.out
+net Xpos-S-fb conv-s32-float.0.in
+net Xpos-S-fb streamer.0.pin.2
+#halcmd addf conv-s32-float.2 servo-thread
+addf conv-s32-float.0 servo-thread
+addf scale.0 servo-thread
+net Xpos-fb scale.0.out
+
+net Ypos-unscaled-fb scale.1.in
+net Ypos-unscaled-fb conv-s32-float.1.out
+net Ypos-S-fb conv-s32-float.1.in
+net Ypos-S-fb streamer.0.pin.0
+addf conv-s32-float.1 servo-thread
+addf scale.1 servo-thread
+net Ypos-fb scale.1.out
+
+net Zpos-unscaled-fb scale.2.in
+net Zpos-unscaled-fb conv-s32-float.2.out
+net Zpos-S-fb conv-s32-float.2.in
+net Zpos-S-fb streamer.0.pin.1
+addf conv-s32-float.2 servo-thread
+addf scale.2 servo-thread
+net Zpos-fb scale.2.out
+
+# set feedback scaling + offset for igaging scales
+
+setp scale.0.gain 0.01
+setp scale.1.gain 0.01
+setp scale.2.gain 0.01
+#setp scale.2.gain -0.01
+
+#setp scale.2.offset  57.0
+#setp scale.1.offset -50.0
+#setp scale.2.offset  20.0
+
+# connect position feedback to pid 
+
+net Xpos-fb axis.0.motor-pos-fb => pid.0.feedback
+net Ypos-fb axis.1.motor-pos-fb => pid.1.feedback
+net Zpos-fb axis.2.motor-pos-fb => pid.2.feedback
+#net Xpos-fb pid.0.feedback
+#net Ypos-fb pid.1.feedback
+#net Zpos-fb pid.2.feedback
+
+# The way the PRU driver is written all pwmgens have the same period. 
+#
+setp hpg.pwmgen.00.pwm_period       16384
+#
+## Setup something close to zero motion to start...
+#
+setp hpg.pwmgen.00.out.00.pin       811
+setp hpg.pwmgen.00.out.00.enable    1
+setp hpg.pwmgen.00.out.00.value     0.0
+#
+setp hpg.pwmgen.00.out.01.pin       915
+setp hpg.pwmgen.00.out.01.enable    1
+setp hpg.pwmgen.00.out.01.value     0.0
+#
+setp hpg.pwmgen.00.out.02.pin       921
+setp hpg.pwmgen.00.out.02.enable    1
+setp hpg.pwmgen.00.out.02.value     0.0
+#
+## pwm output is a value from 0 to 1. The Ludd ADC range is +/-10V
+##  -10V -> 0
+##  - 5V -> 0.25
+##    0V -> 0.5
+##  + 5V -> 0.75
+##  +10V -> 1
+##
+## ... but we need a constant 0.5 added to the output even when pid control is off.
+##     we're using sum2 for this rather than pid.N.bias (per man 9 pid)
+#
+loadrt sum2 count=3
+#
+## X-axis: note switch from index 2 for pid to index 0 for pwmgen
+#
+net Xoutput sum2.0.in0
+setp sum2.0.in1 0.5
+net Xpwmcmd sum2.0.out hpg.pwmgen.00.out.00.value
+addf sum2.0 servo-thread
+#
+## Y-axis: note switch from index 0 to 1
+#
+net Youtput sum2.1.in0
+setp sum2.1.in1 0.5
+net Ypwmcmd sum2.1.out hpg.pwmgen.00.out.01.value
+addf sum2.1 servo-thread
+#
+## Z-axis: note switch from index 0 to 1
+#
+net Zoutput sum2.2.in0
+setp sum2.2.in1 0.5
+net Zpwmcmd sum2.2.out hpg.pwmgen.00.out.02.value
+addf sum2.2 servo-thread
+
+net tool-number <= iocontrol.0.tool-prep-number
+#net tool-change-loopback iocontrol.0.tool.-change => iocontrol.0.tool-changed
+net tool-change-loopback iocontrol.0.tool-change => iocontrol.0.tool-changed
+net tool-prepare-loopback iocontrol.0.tool-prepare => iocontrol.0.tool-prepared
